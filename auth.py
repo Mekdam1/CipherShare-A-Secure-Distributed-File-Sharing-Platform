@@ -56,3 +56,18 @@ def login():
 
     print("[-] Invalid username or password.")
     return False
+
+def verify_credentials(username, password):
+    """Verify username and password without user prompts."""
+    hashed_input = hash_password(password)
+
+    if not os.path.exists(USERS_FILE):
+        return False
+
+    with open(USERS_FILE, 'r') as f:
+        for line in f:
+            saved_user, saved_hash = line.strip().split(',', 1)
+            if username == saved_user and hashed_input == saved_hash:
+                return True
+
+    return False

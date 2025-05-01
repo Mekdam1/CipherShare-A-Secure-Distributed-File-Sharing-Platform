@@ -2,97 +2,64 @@ import socket
 import threading
 import os
 import shutil
-from datetime import datetime, timedelta
-import time
 import hashlib
+import time
+from datetime import datetime, timedelta
+from auth import login, signup, verify_credentials
+from cryptography.fernet import Fernet, InvalidToken
 
-# Authentication constants
-USERS_FILE = 'users.txt'
-DEBUG_FILE = 'users_hashed_debug.txt'
-SHARE_FOLDER = 'shared'
+# Settings
 REND_SERVER_IP = 'localhost'
 REND_SERVER_PORT = 5000
-SESSION_DURATION = timedelta(minutes=5)
+SHARE_FOLDER = 'shared'
+KEY_FILE = 'symmetric.key'
+HASHES_FILE = 'file_hashes.txt'
+SESSION_TIMEOUT = timedelta(minutes=5)
 
-# Create shared folder if it doesn't exist
+# Session management
+session_active = threading.Event()
+login_time = None
+
+# Ensure shared folder exists
 if not os.path.exists(SHARE_FOLDER):
     os.makedirs(SHARE_FOLDER)
 
-# Session management
-login_time = None
-session_active = threading.Event()
+# Generate symmetric key if not exists
+if not os.path.exists(KEY_FILE):
+    key = Fernet.generate_key()
+    with open(KEY_FILE, 'wb') as f:
+        f.write(key)
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+# Load symmetric key
+with open(KEY_FILE, 'rb') as f:
+    symmetric_key = f.read()
+fernet = Fernet(symmetric_key)
 
-def save_user(username, hashed_password):
-    with open(USERS_FILE, 'a') as f:
-        f.write(f"{username},{hashed_password}\n")
-    with open(DEBUG_FILE, 'a') as debug:
-        debug.write(f"{username} => {hashed_password}\n")
+def hash_data(data):
+    return hashlib.sha256(data).hexdigest()
 
-def user_exists(username):
-    if not os.path.exists(USERS_FILE):
-        return False
-    with open(USERS_FILE, 'r') as f:
+def save_file_hash(filename, hash_value):
+    with open(HASHES_FILE, 'a') as f:
+        f.write(f"{filename},{hash_value}\n")
+
+def get_file_hash(filename):
+    if not os.path.exists(HASHES_FILE):
+        return None
+    with open(HASHES_FILE, 'r') as f:
         for line in f:
-            saved_user, _ = line.strip().split(',', 1)
-            if username == saved_user:
-                return True
-    return False
-
-def signup():
-    username = input("Choose a username: ").strip()
-    password = input("Choose a password: ").strip()
-
-    if user_exists(username):
-        print("[-] Username already exists.")
-        return False
-
-    hashed = hash_password(password)
-    save_user(username, hashed)
-    print("[+] Signup successful.")
-    return True
-
-def login():
-    print("\nPlease log in to continue:")
-    username = input("Enter username: ").strip()
-    password = input("Enter password: ").strip()
-
-    hashed_input = hash_password(password)
-
-    if not os.path.exists(USERS_FILE):
-        print("[-] No users registered yet.")
-        return False
-
-    with open(USERS_FILE, 'r') as f:
-        for line in f:
-            saved_user, saved_hash = line.strip().split(',', 1)
-            if username == saved_user and hashed_input == saved_hash:
-                print("[+] Login successful.")
-                return True
-
-    print("[-] Invalid username or password.")
-    return False
-
-def session_monitor():
-    global login_time
-    while True:
-        if session_active.is_set() and login_time:
-            if datetime.now() - login_time > SESSION_DURATION:
-                print("\n[!] Session expired. Please log in again to relogin please press 1.")
-                session_active.clear()
-                login_time = None
-        time.sleep(5)
+            name, file_hash = line.strip().split(',', 1)
+            if name == filename:
+                return file_hash
+    return None
 
 def handle_client(conn, addr):
     filename = conn.recv(1024).decode()
     filepath = os.path.join(SHARE_FOLDER, filename)
     if os.path.exists(filepath):
         with open(filepath, 'rb') as f:
-            data = f.read()
-            conn.sendall(data)
-        print(f"[+] Sent file '{filename}' to {addr}")
+            encrypted_data = f.read()
+        conn.sendall(encrypted_data)
+        print(f"[+] Sent encrypted file '{filename}' to {addr}")
     else:
         conn.send(b'ERROR: File not found')
     conn.close()
@@ -118,9 +85,20 @@ def list_files():
 def upload_file():
     file_path = input("Enter the full path of the file you want to share: ").strip()
     if os.path.isfile(file_path):
-        dest_path = os.path.join(SHARE_FOLDER, os.path.basename(file_path))
-        shutil.copy(file_path, dest_path)
-        print(f"[+] File '{os.path.basename(file_path)}' copied to shared folder.")
+        with open(file_path, 'rb') as f:
+            original_data = f.read()
+        encrypted_data = fernet.encrypt(original_data)
+        hash_value = hash_data(original_data)
+
+        dest_filename = os.path.basename(file_path)
+        dest_path = os.path.join(SHARE_FOLDER, dest_filename)
+
+        with open(dest_path, 'wb') as f:
+            f.write(encrypted_data)
+
+        save_file_hash(dest_filename, hash_value)
+        print(f"[+] File '{dest_filename}' encrypted and copied to shared folder.")
+        print(f"[✓] Hash saved for integrity verification.")
     else:
         print("[-] File not found. Please check the path.")
 
@@ -151,43 +129,77 @@ def download_file():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((ip, port))
         s.send(filename.encode())
-        data = s.recv(1024 * 1024)
-        if data.startswith(b'ERROR'):
-            print(data.decode())
+        encrypted_data = s.recv(1024 * 1024)
+        if encrypted_data.startswith(b'ERROR'):
+            print(encrypted_data.decode())
         else:
-            with open(os.path.join(SHARE_FOLDER, f"from_{ip}_{filename}"), 'wb') as f:
-                f.write(data)
-            print(f"[+] File '{filename}' downloaded from {peer}")
+            try:
+                decrypted_data = fernet.decrypt(encrypted_data)
+                print("[✓] Decryption successful.")
+            except InvalidToken:
+                print("[-] Decryption failed. The file may be corrupted or the key is wrong.")
+                return
+
+            downloaded_path = os.path.join(SHARE_FOLDER, f"from_{ip}_{filename}")
+            with open(downloaded_path, 'wb') as f:
+                f.write(decrypted_data)
+
+            received_hash = hash_data(decrypted_data)
+            original_hash = get_file_hash(filename)
+            if original_hash:
+                if received_hash == original_hash:
+                    print("[✓] File integrity verified successfully.")
+                else:
+                    print("[✗] WARNING: File hash mismatch! File may be corrupted.")
+            else:
+                print("[!] No original hash available for comparison.")
+
+            print(f"[+] File '{filename}' downloaded and saved as '{downloaded_path}'")
     except Exception as e:
         print(f"[-] Failed to download: {e}")
     finally:
-        if 's' in locals():
-            s.close()
+        s.close()
 
 def require_active_session():
     global login_time
     while not session_active.is_set():
-        if login():
+        print("\n[!] Your session has expired. Please press 1 to re-login.")
+        while True:
+            choice = input("Press 1 to re-login: ")
+            if choice == '1':
+                break
+            else:
+                print("Invalid input. Please press 1 to re-login.")
+
+        username = input("Enter your username: ").strip()
+        password = input("Enter your password: ").strip()
+
+        if verify_credentials(username, password):
+            print("[+] Re-login successful.")
             login_time = datetime.now()
             session_active.set()
         else:
             print("[-] Login failed. Please try again.")
 
-def main():
-    print("Welcome to CipherShare\n")
-
-    threading.Thread(target=session_monitor, daemon=True).start()
-
-    # Initial login
+def session_watcher():
+    global login_time
     while True:
-        print("\n1. Login")
+        time.sleep(5)
+        if login_time and datetime.now() - login_time > SESSION_TIMEOUT:
+            session_active.clear()
+            require_active_session()
+
+def main():
+    global login_time
+    print("Welcome to CipherShare\n")
+    while True:
+        print("1. Login")
         print("2. Sign Up")
         print("3. Exit")
         choice = input("Choose an option: ")
 
         if choice == '1':
             if login():
-                global login_time
                 login_time = datetime.now()
                 session_active.set()
                 break
@@ -200,19 +212,17 @@ def main():
 
     port = int(input("Enter your peer port (e.g. 6000, 6001): "))
     threading.Thread(target=file_server, args=(port,), daemon=True).start()
+    threading.Thread(target=session_watcher, daemon=True).start()
 
     while True:
         print("\nOptions:")
         print("1. List local shared files")
-        print("2. Upload a file to share")
+        print("2. Upload a file to share (encrypted)")
         print("3. Connect to rendezvous server")
-        print("4. Download file from peer")
+        print("4. Download file from peer (with decryption & hash check)")
         print("5. Exit")
 
         choice = input("Select option: ")
-
-        if choice in {'1', '2', '3', '4'}:
-            require_active_session()
 
         if choice == '1':
             list_files()
