@@ -1,0 +1,58 @@
+{
+  "mai@test": {
+    "joe@test": [
+      "C:\\Users\\dell\\Desktop\\test\\Phase 4.txt",
+      "trial 1.txt",
+      "trial 2.txt",
+      "mai@test_to_joe@test_trial 2.txt"
+    ],
+    "public": [
+      "trial 1.txt",
+      "trial 2.txt",
+      {
+        "filename": "trial 1.txt",
+        "private": false,
+        "shared_at": "2025-05-11T03:55:49.616018"
+      }
+    ],
+    "ali@test": [
+      "mai@test_to_ali@test_trial 3.txt"
+    ]
+  },
+  "mohand@test": {
+    "public": [
+      "test phase 4.txt"
+    ]
+  },
+  "soha@test": {
+    "public": [
+      "trial 1.txt"
+    ],
+    "joe@test": [
+      "soha@test_to_joe@test_trial 2.txt"
+    ]
+  },
+  "joe@test": {
+    "public": [
+      "trial 3.txt"
+    ]
+  },
+  "salma@test": {
+    "public": [
+      "trial 1.txt"
+    ]
+  },
+  "huda@test": {
+    "public": [
+      "trial 1.txt"
+    ]
+  },
+  "rahma@test": {
+    "public": [
+      "trial 1.txt"
+    ],
+    "joe@test": [
+      "rahma@test_to_joe@test_trial 2.txt"
+    ]
+  }
+}
